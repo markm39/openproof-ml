@@ -17,27 +17,46 @@ This repo trains a step-level tactic model for [OpenProof](https://github.com/ma
 - Qwen3.5-2B (March 2026, hybrid GDN attention -- first application to theorem proving)
 - Qwen3-1.7B (proven base, used by Kimina-Prover-RL-1.7B at 76.6% MiniF2F)
 
-## Quick start
+## Quick start (fresh GPU instance)
+
+Everything from zero to trained model in one shot:
 
 ```bash
-# Install
-pip install -e ".[dev]"
+git clone https://github.com/markm39/openproof-ml.git
+cd openproof-ml
+make all    # installs everything, downloads data, extracts, trains
+```
 
-# Download training data
+Or step by step:
+
+```bash
+# 1. Install Python deps + Lean toolchain + Mathlib + Pantograph
+make setup-all
+
+# 2. Download training data (LeanDojo, Lean Workbook, Goedel-Pset)
 make download-data
 
-# Extract (state, tactic) pairs
+# 3. Extract (state, tactic) pairs into training JSONL
 make extract
 
-# Train (needs GPU -- run on Thunder Compute / cloud)
+# 4. Train SFT (needs GPU)
 make train-sft CONFIG=configs/sft_qwen35_2b.yaml
 
-# Evaluate on MiniF2F
+# 5. Evaluate on MiniF2F
 make eval CONFIG=configs/eval_minif2f.yaml
 
-# Export to ollama
+# 6. Export to GGUF + ollama
 make export CONFIG=configs/export.yaml
 ```
+
+### Prerequisites
+
+- Python 3.10+
+- CUDA GPU (A100-80GB recommended, ~$0.78/hr on Thunder Compute)
+- ~50GB disk (datasets + Mathlib cache + checkpoints)
+- Internet access for initial downloads
+
+Everything else (Lean, elan, Mathlib, Pantograph) is installed automatically by `make setup-all`.
 
 ## Project structure
 
@@ -53,6 +72,8 @@ src/openproof_ml/
   utils/          Config loading, logging
 tests/            Unit tests
 paper/            Paper (LaTeX)
+lean/             Lean project (created by make setup-lean)
+vendor/           Pantograph REPL (built by make setup-lean)
 ```
 
 ## Prompt format
@@ -72,6 +93,16 @@ The trained model is served via ollama and consumed by OpenProof's `OllamaPropos
 ```
 openproof-ml (training) --> GGUF --> ollama --> openproof (inference)
 ```
+
+## Training cost
+
+| Stage | GPU Hours | Cost (A100 @ $0.78/hr) |
+|-------|----------|------------------------|
+| SFT (x2 bases) | 16 | $12 |
+| Expert iteration (3 rounds) | 200 | $156 |
+| DAPO RL | 24 | $19 |
+| Eval | 10 | $8 |
+| **Total** | **~250** | **~$195** |
 
 ## License
 

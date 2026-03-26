@@ -25,6 +25,10 @@ dist/
 build/
 .eggs/
 
+# Lean project (created by make setup-lean)
+lean/
+vendor/
+
 # Environments
 .venv/
 venv/
