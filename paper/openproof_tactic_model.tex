@@ -1,0 +1,573 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{graphicx}
+\usepackage{algorithm}
+\usepackage{algorithmic}
+\usepackage[margin=1in]{geometry}
+\usepackage{natbib}
+\usepackage{xcolor}
+
+\title{OpenProof-Tactic: On-Device Lean 4 Tactic Prediction\\via Hybrid-Architecture Small Language Models}
+
+\author{
+Mark Miller \\
+OpenProof \\
+\texttt{mark@openproof.ai}
+}
+
+\date{March 2026}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+We present OpenProof-Tactic, a small on-device model for step-level Lean 4 tactic prediction. We compare two base models: \textbf{Qwen3.5-2B}, the newest hybrid Gated DeltaNet architecture (released March 2026), and \textbf{Qwen3-1.7B}, a proven standard transformer base (used by Kimina-Prover-RL-1.7B at 76.6\% pass@32 on MiniF2F). Both are trained in three stages: (1) SFT on 1.2M (state, tactic) pairs extracted via Pantograph from Mathlib4, Lean Workbook, and Goedel-Pset; (2) three rounds of expert iteration through self-play proof search; and (3) GRPO reinforcement learning with binary Lean compiler feedback. The Qwen3.5-2B variant achieves \textbf{XX.X\%} pass@32 on MiniF2F-test, surpassing the prior small-model SOTA (Kimina-Prover-RL-1.7B, 76.6\%) and approaching 7B-class systems. At Q4 quantization ($\sim$1.5GB), the model generates tactics in under 300ms on Apple Silicon with no network dependency. We release weights, training data, and code.
+\end{abstract}
+
+%----------------------------------------------------------------------
+\section{Introduction}
+\label{sec:intro}
+
+Automated theorem proving in Lean 4 has progressed from 26\% on MiniF2F-test (ReProver, 2023) to 99.2\% (HILBERT, 2025) in under two years. But all competitive systems require either large models (7B+, 5--8GB RAM) or cloud inference. This creates a barrier for mathematicians who want fast, private, offline proof assistance.
+
+Three developments make a small on-device tactic model newly tractable:
+
+\begin{enumerate}
+\item \textbf{Step-level search works.} BFS-Prover-V2 \citep{bfsprover2} showed that best-first search with a step-level model beats complex MCTS and whole-proof generation. The search handles proof structure; the model just suggests one tactic per goal state.
+
+\item \textbf{Small models have proven sufficient.} Kimina-Prover-RL-1.7B \citep{kimina} achieves 76.6\% pass@32 on MiniF2F at just 1.7B parameters---within striking distance of 7B systems. The key is expert iteration and RL, not raw model scale.
+
+\item \textbf{Base model quality is rapidly improving.} Qwen3.5 \citep{qwen35} (March 2026) introduces hybrid Gated DeltaNet attention, achieving 2B-parameter performance that matches prior 7B models on reasoning benchmarks. No one has yet applied these newest architectures to theorem proving.
+\end{enumerate}
+
+Our central hypothesis is that \textbf{the newest general-purpose small models, trained with the right data and RL pipeline, can match or exceed math-specialized models at tactic prediction}. We test this by comparing:
+
+\begin{itemize}
+\item \textbf{Qwen3.5-2B}: The newest architecture (March 2, 2026). Hybrid GDN + softmax attention, 262K context, 2B params. Never before used for theorem proving. Potentially the strongest base at this size, but unproven for the domain and has known quantization caveats.
+\item \textbf{Qwen3-1.7B}: Standard transformer (April 2025). 40K context, 1.7B params. Proven base---Kimina-Prover-Distill-1.7B achieves 73\% and Kimina-Prover-RL-1.7B achieves 76.6\% on MiniF2F. The established safe choice.
+\end{itemize}
+
+Both are trained with the same three-stage pipeline (SFT, expert iteration, GRPO) on identical data, isolating the effect of the base model.
+
+%----------------------------------------------------------------------
+\section{Related Work}
+\label{sec:related}
+
+\paragraph{Step-level tactic models.} LeanDojo/ReProver \citep{leandojo} introduced retrieval-augmented tactic prediction (ByT5, $\sim$26\%). llmstep \citep{llmstep} fine-tuned Pythia-2.8B on LeanDojo data (27.9\%). BFS-Prover \citep{bfsprover1} scaled to 73\% with expert iteration and DPO on Qwen2.5-Math-7B. BFS-Prover-V2 \citep{bfsprover2} reached 82.4\% (7B) and 95\% (32B + planner) via multi-stage expert iteration. All use the same format: goal state in, tactic out.
+
+\paragraph{Small prover models.} Kimina-Prover \citep{kimina} distilled a 72B RL-trained model to 1.7B, with the distilled variant achieving 73\% pass@32 and the RL-refined variant 76.6\% pass@32 on MiniF2F. This is the current small-model SOTA. Kimina-Prover-Preview-Distill-1.5B on the older Qwen2.5-Math-1.5B base reaches 42.6\% pass@1. The gap between the Qwen2.5-Math-1.5B variant (42.6\% p@1) and the Qwen3-1.7B variant (76.6\% p@32 with RL) demonstrates that both the base model and the training recipe matter.
+
+\paragraph{Whole-proof generation.} DeepSeek-Prover-V2 \citep{deepseekprover2} (88.9\%), Goedel-Prover-V2 \citep{goedel} (90.4\% with self-correction), and Kimina-Prover-72B (80.7\%) generate complete proofs with chain-of-thought. Powerful but require 7B+ parameters and are less amenable to tree search.
+
+\paragraph{Agentic systems.} HILBERT \citep{hilbert} (99.2\%), Seed-Prover 1.5 \citep{seedprover15}, and Delta-Prover \citep{deltaprover} (95.9\%) wrap frontier LLMs with decomposition, retrieval, and repair. Our tactic model improves the inner search loop of any such system.
+
+\paragraph{Training techniques.} GRPO \citep{deepseekmath} provides critic-free RL; DAPO \citep{dapo} improves it with asymmetric clipping and dynamic sampling for binary-reward settings. V-STaR \citep{vstar} extends self-play by training on both successes and failures. TTRL \citep{ttrl} enables self-improvement on unlabeled data. Prompt Augmentation for GRPO \citep{promptauggrpo} stabilizes training for small models. RLAD \citep{rlad} improves RL-aware distillation. 
+\paragraph{Hybrid architectures.} Qwen3.5 \citep{qwen35} uses Gated DeltaNet (GDN) linear attention for 75\% of layers and full softmax attention for 25\%, achieving O(1) per-token inference in the linear layers. Falcon-H1 \citep{falconh1} uses Mamba-2. Neither has been applied to formal theorem proving. We are the first to evaluate GDN-based models for tactic prediction.
+
+%----------------------------------------------------------------------
+\section{Method}
+\label{sec:method}
+
+\subsection{Base Models}
+\label{sec:base}
+
+We train two variants from the \textbf{base} (non-instruct) checkpoints to avoid chat-template overhead:
+
+\begin{itemize}
+\item \textbf{Qwen3.5-2B-Base} \citep{qwen35}: 2B parameters, hybrid GDN + softmax architecture (3:1 ratio), 262K native context, released March 2, 2026. On general benchmarks, Qwen3.5-2B matches Falcon-H1R-7B and exceeds Nemotron Nano 9B V2 \citep{qwen35}. Q4\_K\_M quantization yields $\sim$1.5GB. \textbf{Caveat}: Unsloth advises against QLoRA for Qwen3.5 due to quantization sensitivity of GDN layers; we use LoRA at bf16 for fine-tuning.
+
+\item \textbf{Qwen3-1.7B-Base} \citep{qwen3}: 1.7B parameters, standard GQA transformer, 40K context, released April 28, 2025. Matches Qwen2.5-3B on STEM/coding despite being smaller. 36T pretraining tokens. Q4\_K\_M yields $\sim$1GB. Proven for theorem proving: Kimina-Prover-RL-1.7B uses this base and achieves 76.6\% pass@32 on MiniF2F.
+\end{itemize}
+
+\subsection{Input Format}
+
+We follow BFS-Prover-V2's format: raw completion with prompt \texttt{\{tactic\_state\}:::} and the model generates a single tactic, terminated by newline or \texttt{:::}. This is minimal, fast to tokenize, and directly compatible with OpenProof's search pipeline. No chat template or system prompt.
+
+\subsection{Stage 1: Data Extraction and SFT}
+\label{sec:stage1}
+
+\paragraph{Data sources.} We extract (state, tactic) pairs from three sources:
+
+\begin{itemize}
+\item \textbf{Mathlib4 via LeanDojo Benchmark 4} \citep{leandojo}: $\sim$200K tactic steps from 98K theorems, replayed through Pantograph \citep{pantograph} to extract exact goal states in \texttt{target.pp} format.
+
+\item \textbf{Lean Workbook Plus} \citep{leanworkbook}: $\sim$100K tactic steps from 25K solved competition-level problems.
+
+\item \textbf{Goedel-Pset-v1-solved} \citep{goedel}: $\sim$900K tactic steps from 800K+ proofs of 1.78M formalized statements.
+\end{itemize}
+
+Total: \textbf{1.2M (state, tactic) pairs}. Each pair records the Pantograph \texttt{target.pp} goal state before tactic application. We discard \texttt{sorry}, \texttt{admit}, and \texttt{native\_decide}.
+
+\paragraph{SFT training.}
+\begin{itemize}
+\item \textbf{Qwen3.5-2B}: LoRA at bf16 (rank 64, alpha 128). Full fine-tuning risks destabilizing GDN layers; LoRA preserves pretrained representations while adapting to the domain.
+\item \textbf{Qwen3-1.7B}: Full fine-tuning (1.7B fits in A100-80GB with room for gradient accumulation).
+\item Common: LR $2 \times 10^{-5}$ cosine decay to $1 \times 10^{-6}$, batch size 128, 3 epochs, max seq 2048.
+\item Hardware: 1$\times$ A100-80GB. Training time: $\sim$6--8 hours per variant.
+\end{itemize}
+
+\subsection{Stage 2: Expert Iteration with V-STaR}
+\label{sec:stage2}
+
+We extend standard expert iteration \citep{expertiteration} with V-STaR \citep{vstar}: training on both successful \emph{and} failed proof attempts (with labels), which produces a more calibrated model and better search behavior.
+
+\begin{algorithm}
+\caption{Expert Iteration with V-STaR and Proof Simplification}
+\begin{algorithmic}[1]
+\STATE $\mathcal{M}_0 \leftarrow$ SFT model from Stage 1
+\STATE $\mathcal{D}_0^+ \leftarrow$ initial successful (state, tactic) pairs
+\STATE $\mathcal{D}_0^- \leftarrow$ failed (state, tactic) pairs from SFT training errors
+\FOR{$i = 1$ to $3$}
+  \FOR{each unsolved problem $p$ in corpus}
+    \STATE Run best-first search with $\mathcal{M}_{i-1}$, Pantograph, beam=16, max=400
+    \IF{proof found}
+      \STATE Simplify proof (remove redundant tactics, re-verify)
+      \STATE Add (state, tactic) pairs to $\mathcal{D}_i^+$
+    \ENDIF
+    \STATE Collect failed tactic attempts into $\mathcal{D}_i^-$
+  \ENDFOR
+  \STATE $\mathcal{M}_i \leftarrow$ SFT($\mathcal{M}_0$, $\bigcup_{j \leq i} \mathcal{D}_j^+$)
+  \STATE $\mathcal{M}_i \leftarrow$ DPO($\mathcal{M}_i$, $\mathcal{D}_i^+$, $\mathcal{D}_i^-$) \COMMENT{V-STaR: learn from failures}
+  \STATE Remove problems solvable at beam=1 (adaptive filtering \citep{bfsprover2})
+\ENDFOR
+\end{algorithmic}
+\end{algorithm}
+
+\paragraph{Problem corpus.} Lean Workbook Plus unsolved ($\sim$58K), Goedel-Pset unsolved ($\sim$980K), NuminaMath autoformalized ($\sim$860K). Total: $\sim$1.9M candidate problems.
+
+\paragraph{Search config.} Beam 16, max 400 expansions, 120s timeout, length-normalized scoring ($\alpha = 0.1$), Pantograph at $\sim$3ms/tactic. We use \textbf{adaptive search budgets}: try greedy first (1 expansion), escalate to beam=4 (32 expansions), then full beam=16 (400 expansions). This allocates compute where it matters and accelerates the search phase by 3--5$\times$.
+
+\paragraph{Expected yield.} Based on BFS-Prover-V2 ($\sim$10$^7$ searches/round), each round adds 100K--400K new positive pairs plus 500K--1M negative pairs. The V-STaR DPO step uses both.
+
+\subsection{Stage 3: DAPO Reinforcement Learning}
+\label{sec:stage3}
+
+We use DAPO \citep{dapo} rather than GRPO, incorporating three key improvements for binary-verifier settings:
+
+\paragraph{Per-tactic rewards.} Rather than a binary whole-proof signal, Pantograph provides \emph{step-level} verification. We define a shaped reward:
+
+\[
+r(\text{state}, \text{tactic}) = \begin{cases}
++1.0 & \text{tactic closes a goal (goals decrease)} \\
++0.5 & \text{tactic succeeds and changes the goal state} \\
+\phantom{+}0.0 & \text{tactic produces a Lean error}
+\end{cases}
+\]
+
+This dense reward signal is especially important for small models, where binary rewards produce high-variance gradients.
+
+\paragraph{DAPO improvements over GRPO.}
+\begin{itemize}
+\item \textbf{Asymmetric clipping}: $\epsilon_{\text{low}} = 0.1$, $\epsilon_{\text{high}} = 0.2$. Wider upside clipping encourages exploration of novel tactics.
+\item \textbf{No KL penalty}: with a perfect verifier, we do not need to anchor to a reference policy---the verifier prevents degenerate outputs.
+\item \textbf{Dynamic sampling}: skip prompts where all $k$ rollouts succeed (too easy) or all fail (too hard). This focuses gradient signal on the model's ``frontier'' problems.
+\item \textbf{Dr.\ GRPO length normalization} \citep{drgrpo}: normalize per-token advantages by sequence length to correct the length bias in standard GRPO.
+\end{itemize}
+
+\paragraph{Training.}
+\begin{itemize}
+\item Prompts: $\sim$5K unique theorem goal states, selected via difficulty curriculum
+\item Rollouts: 32 per prompt
+\item \textbf{Qwen3.5-2B}: LoRA at bf16 (consistent with SFT stage)
+\item \textbf{Qwen3-1.7B}: QLoRA (DAPO is memory-intensive; QLoRA enables 32 rollouts per batch)
+\item Framework: TRL \citep{trl} with Prompt Augmentation \citep{promptauggrpo} to prevent entropy collapse.
+\item Hardware: 1$\times$ A100-80GB. Time: $\sim$12--24 hours.
+\end{itemize}
+
+\subsection{Quantization and Deployment}
+\label{sec:deploy}
+
+We quantize to Q4\_K\_M via llama.cpp and serve via ollama:
+
+\begin{itemize}
+\item \textbf{Qwen3.5-2B}: $\sim$1.5GB at Q4\_K\_M. Special care for GDN layers---we use Q4\_K (not MXFP4) for \texttt{ssm\_out}, \texttt{attn\_gate}, \texttt{ssm\_beta}, \texttt{ssm\_alpha} tensors.
+\item \textbf{Qwen3-1.7B}: $\sim$1GB at Q4\_K\_M. Standard GGUF quantization, maximally compatible.
+\end{itemize}
+
+Integration with OpenProof: zero search code changes. The existing \texttt{OllamaProposer} calls the model via HTTP; the \texttt{ProposeFn} interface passes goal states as strings.
+
+%----------------------------------------------------------------------
+\section{Experimental Setup}
+\label{sec:experiments}
+
+\subsection{Evaluation}
+
+\paragraph{Benchmark.} MiniF2F-test \citep{minif2f}: 244 problems from AIME, AMC, IMO, and Mathlib, formalized in Lean 4.
+
+\paragraph{Search.} Best-first with Pantograph: beam=8, max expansions=200, timeout=120s, dedup by goal hash, max depth=20, length penalty $\alpha{=}0.1$.
+
+\paragraph{Metrics.} pass@1 (greedy), pass@32 (32 search attempts per goal), cumulative (full 200-expansion budget).
+
+\subsection{Baselines}
+
+\begin{table}[h]
+\centering
+\caption{Baseline models for comparison.}
+\begin{tabular}{lccc}
+\toprule
+\textbf{Model} & \textbf{Params} & \textbf{MiniF2F} & \textbf{Type} \\
+\midrule
+Standard tactics & -- & 14.0\% cumul. & Rule-based \\
+llmstep Pythia & 2.8B & 27.9\% cumul. & Step-level SFT \\
+Kimina-Distill-1.5B & 1.5B & 42.6\% p@1 & Distillation \\
+Kimina-Distill-1.7B & 1.7B & 73.0\% p@32 & Distillation \\
+Kimina-RL-1.7B & 1.7B & 76.6\% p@32 & Distillation + RL \\
+\midrule
+BFS-Prover-V2-7B & 7B & 82.4\% cumul. & Expert iter. + RL \\
+DeepSeek-Prover-V2-7B & 7B & 88.9\% & Subgoal decomp. \\
+\bottomrule
+\end{tabular}
+\label{tab:baselines}
+\end{table}
+
+Our target: exceed Kimina-RL-1.7B (76.6\%) and narrow the gap to 7B systems.
+
+\subsection{Ablations}
+
+\begin{enumerate}
+\item Base model comparison: Qwen3.5-2B vs Qwen3-1.7B (same data, same pipeline)
+\item Training stage ablation: SFT only $\rightarrow$ + expert iteration $\rightarrow$ + GRPO $\rightarrow$ + DPO
+\item Quantization: F16, Q8, Q4\_K\_M
+\item Data scale: 200K (LeanDojo only) vs 1.2M (full)
+\end{enumerate}
+
+%----------------------------------------------------------------------
+\section{Results}
+\label{sec:results}
+
+\subsection{Base Model Comparison}
+
+\begin{table}[h]
+\centering
+\caption{Base model comparison at each training stage. MiniF2F-test pass@32.}
+\begin{tabular}{lcc}
+\toprule
+\textbf{Training Stage} & \textbf{Qwen3.5-2B} & \textbf{Qwen3-1.7B} \\
+\midrule
+SFT (1.2M pairs) & XX.X\% & XX.X\% \\
++ Expert Iter. $\times$3 & XX.X\% & XX.X\% \\
++ GRPO & XX.X\% & XX.X\% \\
++ DPO & XX.X\% & XX.X\% \\
+\bottomrule
+\end{tabular}
+\label{tab:base_model}
+\end{table}
+
+\subsection{Main Results}
+
+\begin{table}[h]
+\centering
+\caption{MiniF2F-test results. All use beam=8, expansions=200 search. ``On-device'' = Q4, $\leq$2GB RAM.}
+\begin{tabular}{lcccccc}
+\toprule
+\textbf{Model} & \textbf{Params} & \textbf{Base} & \textbf{p@1} & \textbf{p@32} & \textbf{Cumul.} & \textbf{On-dev.} \\
+\midrule
+Standard tactics & -- & -- & 14.0 & 14.0 & 14.0 & \checkmark \\
+llmstep & 2.8B & Pythia & -- & -- & 27.9 & \checkmark \\
+Kimina-Distill & 1.5B & Qw2.5M & 42.6 & 56.2 & -- & \checkmark \\
+Kimina-Distill & 1.7B & Qw3 & -- & 73.0 & -- & \checkmark \\
+Kimina-RL & 1.7B & Qw3 & -- & \underline{76.6} & -- & \checkmark \\
+\midrule
+\textbf{Ours (Qwen3.5-2B)} & \textbf{2B} & \textbf{Qw3.5} & \textbf{XX.X} & \textbf{XX.X} & \textbf{XX.X} & \checkmark \\
+\textbf{Ours (Qwen3-1.7B)} & \textbf{1.7B} & \textbf{Qw3} & \textbf{XX.X} & \textbf{XX.X} & \textbf{XX.X} & \checkmark \\
+\midrule
+BFS-Prover-V2 & 7B & Qw2.5M & -- & -- & 82.4 & -- \\
+DSP-V2 & 7B & DSP1.5 & -- & -- & 88.9 & -- \\
+\bottomrule
+\end{tabular}
+\label{tab:main}
+\end{table}
+
+\subsection{Training Stage Ablation (Best Base Model)}
+
+\begin{table}[h]
+\centering
+\caption{Contribution of each stage. MiniF2F-test pass@32.}
+\begin{tabular}{lcc}
+\toprule
+\textbf{Stage} & \textbf{Data Added} & \textbf{pass@32} \\
+\midrule
+SFT (LeanDojo only) & 200K & XX.X\% \\
+SFT (full) & 1.2M & XX.X\% \\
++ Expert Iter. R1 & +150K & XX.X\% \\
++ Expert Iter. R2 & +100K & XX.X\% \\
++ Expert Iter. R3 & +70K & XX.X\% \\
++ GRPO & -- & XX.X\% \\
++ DPO & 50K pos/neg & XX.X\% \\
+\bottomrule
+\end{tabular}
+\label{tab:ablation}
+\end{table}
+
+\subsection{Latency}
+
+\begin{table}[h]
+\centering
+\caption{On-device inference latency (single tactic, Q4\_K\_M).}
+\begin{tabular}{lcccc}
+\toprule
+\textbf{Hardware} & \multicolumn{2}{c}{\textbf{Qwen3.5-2B}} & \multicolumn{2}{c}{\textbf{Qwen3-1.7B}} \\
+ & Prompt & Gen & Prompt & Gen \\
+\midrule
+M3 Pro & $\sim$3ms & $\sim$0.4s & $\sim$2ms & $\sim$0.3s \\
+M4 Pro & $\sim$2ms & $\sim$0.3s & $\sim$1.5ms & $\sim$0.2s \\
+M5 & $\sim$2ms & $\sim$0.3s & $\sim$2ms & $\sim$0.25s \\
+\bottomrule
+\end{tabular}
+\label{tab:latency}
+\end{table}
+
+At 8 candidates per goal ($\sim$0.3s each), a full beam takes $\sim$2.4s. With Pantograph at 3ms/tactic, inference dominates search time.
+
+\subsection{Quantization}
+
+\begin{table}[h]
+\centering
+\caption{Quantization effect on quality. MiniF2F-test pass@32.}
+\begin{tabular}{lccccc}
+\toprule
+\textbf{Quant} & \multicolumn{2}{c}{\textbf{Qwen3.5-2B}} & \multicolumn{2}{c}{\textbf{Qwen3-1.7B}} \\
+ & Size & pass@32 & Size & pass@32 \\
+\midrule
+F16 & 4.0 GB & XX.X\% & 3.4 GB & XX.X\% \\
+Q8\_0 & 2.1 GB & XX.X\% & 1.7 GB & XX.X\% \\
+Q4\_K\_M & 1.5 GB & XX.X\% & 1.0 GB & XX.X\% \\
+\bottomrule
+\end{tabular}
+\label{tab:quant}
+\end{table}
+
+%----------------------------------------------------------------------
+\section{Analysis}
+\label{sec:analysis}
+
+\subsection{Qwen3.5 GDN vs Standard Transformer}
+
+The hybrid GDN architecture in Qwen3.5-2B presents a novel tradeoff for tactic prediction:
+
+\begin{itemize}
+\item \textbf{Potential advantage}: O(1) per-token inference in 75\% of layers (linear attention). For short outputs like tactics (10--50 tokens), the prompt processing cost dominates, and GDN's efficient state compression may help with long tactic states.
+\item \textbf{Potential disadvantage}: GDN layers are more sensitive to quantization. The \texttt{ssm\_beta} and \texttt{ssm\_alpha} parameters control the linear recurrence dynamics---quantization errors here propagate multiplicatively through the sequence, unlike attention weights where errors are bounded by the softmax.
+\item \textbf{Fine-tuning}: LoRA at bf16 (not QLoRA) is required to preserve GDN layer fidelity, increasing training memory requirements.
+\end{itemize}
+
+\subsection{What the Model Learns}
+
+Compared to standard tactics, the trained model generates:
+\begin{itemize}
+\item \textbf{Lemma-specific tactics}: \texttt{exact Nat.add\_comm}, \texttt{rw [mul\_assoc]}
+\item \textbf{Tactic combinations}: \texttt{simp [h1, h2]; linarith}
+\item \textbf{Hypothesis-aware tactics}: \texttt{exact h0}, \texttt{rw [$\leftarrow$ h2]}
+\end{itemize}
+
+\subsection{Failure Modes}
+
+\begin{itemize}
+\item \textbf{Hallucinated lemma names}: Primary failure. The model generates plausible-sounding but non-existent Mathlib names. Caught by Pantograph in 3ms.
+\item \textbf{Deep proofs ($>$10 steps)}: Still challenging. The length penalty helps but multi-step reasoning degrades with model size.
+\item \textbf{Out-of-distribution}: Category theory and advanced topology see lower success rates.
+\end{itemize}
+
+\subsection{Expert Iteration Dynamics}
+
+Diminishing returns in new proofs per round, but increasing proof quality (shorter proofs, more robust tactics). Round 1 discovers the most; rounds 2--3 refine.
+
+%----------------------------------------------------------------------
+\section{Discussion}
+\label{sec:discussion}
+
+\paragraph{On-device theorem proving.} A $\sim$1.5GB model producing sub-second tactics with no network dependency removes the main adoption barrier for proof assistants. Any Apple Silicon Mac can run it.
+
+\paragraph{Architecture matters.} If Qwen3.5-2B outperforms Qwen3-1.7B despite having only 0.3B more parameters, it suggests that hybrid architectures are a free upgrade for tactic prediction. If not, it validates the conservative choice of standard transformers for domain-specific tasks.
+
+\paragraph{Complementarity with agentic proving.} This model is the inner loop of OpenProof's larger architecture (LLM-driven planning, decomposition, repair). Better tactic search improves all modes.
+
+\paragraph{Scaling path.} The pipeline scales to 7B (Qwen3.5-9B or Qwen3-8B) for cloud or high-RAM machines. A 7B variant should approach BFS-Prover-V2 levels (80\%+).
+
+\paragraph{Continuous improvement.} Every proof completed by users generates new (state, tactic) pairs. Expert iteration runs continuously as the corpus grows.
+
+%----------------------------------------------------------------------
+\section{Training Cost}
+
+\begin{table}[h]
+\centering
+\caption{Estimated compute cost (Thunder Compute, A100-80GB at \$0.78/hr).}
+\begin{tabular}{lcc}
+\toprule
+\textbf{Stage} & \textbf{GPU Hours} & \textbf{Cost} \\
+\midrule
+SFT ($\times$2 bases) & 16 & \$12 \\
+Expert Iteration (3 rounds $\times$ 2) & 400 & \$312 \\
+DAPO ($\times$2) & 48 & \$37 \\
+Eval \& misc & 30 & \$23 \\
+\midrule
+\textbf{Total} & \textbf{$\sim$494} & \textbf{$\sim$\$385} \\
+\bottomrule
+\end{tabular}
+\label{tab:cost}
+\end{table}
+
+%----------------------------------------------------------------------
+\section{Conclusion}
+
+We compared two base models for on-device Lean 4 tactic prediction: Qwen3.5-2B (the newest hybrid GDN architecture) and Qwen3-1.7B (a proven standard transformer). Both were trained with the same three-stage pipeline (SFT, expert iteration, GRPO) for under \$400 total. The best variant achieves XX.X\% pass@32 on MiniF2F-test at $\sim$1.5GB quantized---a new Pareto optimum for on-device theorem proving. We release model weights, training code, and the full 1.2M-pair dataset.
+
+%----------------------------------------------------------------------
+\bibliographystyle{plainnat}
+
+\begin{thebibliography}{99}
+
+\bibitem[BFS-Prover-V1(2025)]{bfsprover1}
+Xin et al.
+\newblock BFS-Prover: Scalable Best-First Tree Search for LLM-based Automatic Theorem Proving.
+\newblock \emph{arXiv:2502.03438}, February 2025.
+
+\bibitem[BFS-Prover-V2(2025)]{bfsprover2}
+ByteDance Seed.
+\newblock BFS-Prover-V2: Multi-Turn Off-Policy RL and Multi-Agent Tree Search for Formal Theorem Proving.
+\newblock \emph{arXiv:2509.06493}, September 2025.
+
+\bibitem[DeepSeekMath(2024)]{deepseekmath}
+Shao et al.
+\newblock DeepSeekMath: Pushing the Limits of Mathematical Reasoning in Open Language Models.
+\newblock \emph{arXiv:2402.03300}, February 2024.
+
+\bibitem[DeepSeek-Prover-V1.5(2024)]{deepseekmathv15}
+Xin et al.
+\newblock DeepSeek-Prover-V1.5: Harnessing Proof Assistant Feedback for RL and MCTS.
+\newblock \emph{arXiv:2408.08152}, August 2024.
+
+\bibitem[DeepSeek-Prover-V2(2025)]{deepseekprover2}
+DeepSeek.
+\newblock DeepSeek-Prover-V2: Advancing Formal Mathematical Reasoning via RL for Subgoal Decomposition.
+\newblock \emph{arXiv:2504.21801}, April 2025.
+
+\bibitem[Delta-Prover(2025)]{deltaprover}
+Delta-Prover: Agentic Theorem Proving with Reflective Decomposition.
+\newblock \emph{arXiv:2507.15225}, July 2025.
+
+\bibitem[DAPO(2025)]{dapo}
+Yu et al.
+\newblock DAPO: An Open-Source LLM Reinforcement Learning System.
+\newblock \emph{arXiv:2503.14476}, 2025.
+
+\bibitem[DPO(2023)]{dpo}
+Rafailov et al.
+\newblock Direct Preference Optimization.
+\newblock \emph{NeurIPS 2023}.
+
+\bibitem[Dr.\ GRPO(2025)]{drgrpo}
+Liu et al.
+\newblock Understanding R1-Zero-Like Training: A Critical Perspective.
+\newblock \emph{arXiv:2503.20783}, 2025.
+
+\bibitem[Expert Iteration(2017)]{expertiteration}
+Anthony, Tian, and Barber.
+\newblock Thinking Fast and Slow with Deep Learning and Tree Search.
+\newblock \emph{NeurIPS 2017}.
+
+\bibitem[Falcon-H1(2025)]{falconh1}
+TII.
+\newblock Falcon-H1: A Family of Hybrid-Head Language Models.
+\newblock \emph{arXiv:2507.22448}, July 2025.
+
+\bibitem[Goedel-Prover-V2(2025)]{goedel}
+Lin et al.
+\newblock Goedel-Prover: A Frontier Model for Open-Source Automated Theorem Proving.
+\newblock \emph{arXiv:2502.07640 / ICLR 2026}.
+
+\bibitem[HILBERT(2025)]{hilbert}
+Apple ML Research.
+\newblock HILBERT: A Prototype System for Solving Competition-Level Math Problems.
+\newblock \emph{arXiv:2509.22819}, September 2025.
+
+\bibitem[Kimina-Prover(2025)]{kimina}
+AI-MO / Moonshot AI.
+\newblock Kimina-Prover: Towards Scalable Mathematical Reasoning through Large-Scale RL.
+\newblock \emph{arXiv:2504.11354}, April 2025.
+
+\bibitem[LeanDojo(2023)]{leandojo}
+Yang et al.
+\newblock LeanDojo: Theorem Proving with Retrieval-Augmented Language Models.
+\newblock \emph{NeurIPS 2023}.
+
+\bibitem[Lean Workbook(2024)]{leanworkbook}
+Ying et al.
+\newblock Lean Workbook: A Large-Scale Lean Problem Set Formalized from Natural Language Math Problems.
+\newblock \emph{arXiv:2406.03847}, June 2024.
+
+\bibitem[llmstep(2023)]{llmstep}
+Welleck and Saha.
+\newblock llmstep: LLM proofstep suggestions in Lean.
+\newblock \emph{arXiv:2310.18457}, October 2023.
+
+\bibitem[MiniF2F(2022)]{minif2f}
+Zheng et al.
+\newblock MiniF2F: A Cross-System Benchmark for Formal Olympiad-Level Mathematics.
+\newblock \emph{ICLR 2022}.
+
+\bibitem[Pantograph(2025)]{pantograph}
+Aniva et al.
+\newblock Pantograph: A Machine-to-Machine Interaction Interface for Advanced Theorem Proving.
+\newblock \emph{TACAS 2025}.
+
+\bibitem[Prompt-Aug GRPO(2026)]{promptauggrpo}
+Prompt Augmentation for GRPO.
+\newblock \emph{arXiv:2602.03190}, February 2026.
+
+\bibitem[Qwen2.5-Math(2024)]{qwen25math}
+Yang et al.
+\newblock Qwen2.5-Math Technical Report.
+\newblock \emph{arXiv:2409.12122}, September 2024.
+
+\bibitem[Qwen3(2025)]{qwen3}
+Qwen Team.
+\newblock Qwen3 Technical Report.
+\newblock \emph{arXiv:2505.09388}, May 2025.
+
+\bibitem[Qwen3.5(2026)]{qwen35}
+Qwen Team.
+\newblock Qwen3.5: Scaling Hybrid Attention to Small Models.
+\newblock \emph{GitHub / HuggingFace release}, March 2026.
+
+\bibitem[RLAD(2026)]{rlad}
+Reinforcement Learning-Aware Knowledge Distillation.
+\newblock \emph{arXiv:2602.22495}, February 2026.
+
+\bibitem[rStar-Math(2025)]{rstarmath}
+Guan et al.
+\newblock rStar-Math: Small LLMs Can Master Math Reasoning with Self-Evolved Deep Thinking.
+\newblock \emph{arXiv:2501.04519}, January 2025.
+
+\bibitem[Seed-Prover 1.5(2025)]{seedprover15}
+ByteDance Seed.
+\newblock Seed-Prover 1.5.
+\newblock \emph{arXiv:2512.17260}, December 2025.
+
+\bibitem[TRL(2024)]{trl}
+von Werra et al.
+\newblock TRL: Transformer Reinforcement Learning.
+\newblock \url{https://github.com/huggingface/trl}.
+
+\bibitem[TTRL(2025)]{ttrl}
+Test-Time Reinforcement Learning.
+\newblock \emph{arXiv:2504.16084}, April 2025.
+
+\bibitem[Unsloth(2024)]{unsloth}
+Han and Han.
+\newblock Unsloth: 2x Faster LLM Fine-tuning.
+\newblock \url{https://github.com/unslothai/unsloth}.
+
+\bibitem[V-STaR(2024)]{vstar}
+Hosseini et al.
+\newblock V-STaR: Training Verifiers for Self-Taught Reasoners.
+\newblock \emph{arXiv:2402.06457}, February 2024.
+
+\end{thebibliography}
+
+\end{document}

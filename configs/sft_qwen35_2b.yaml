@@ -1,0 +1,37 @@
+# SFT training config for Qwen3.5-2B-Base
+model:
+  name: Qwen/Qwen3.5-2B
+  use_lora: true          # Required for Qwen3.5 (QLoRA not recommended for GDN layers)
+  lora_rank: 64
+  lora_alpha: 128
+  lora_target_modules: ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
+  dtype: bfloat16
+
+data:
+  train_file: data/processed/train.jsonl
+  val_file: data/processed/val.jsonl
+  max_seq_length: 2048
+  prompt_field: prompt      # "{goal_state}:::"
+  completion_field: completion  # tactic string
+
+training:
+  output_dir: checkpoints/sft-qwen35-2b
+  num_epochs: 3
+  per_device_batch_size: 4
+  gradient_accumulation_steps: 32  # effective batch = 128
+  learning_rate: 2.0e-5
+  lr_scheduler: cosine
+  min_lr: 1.0e-6
+  warmup_ratio: 0.03
+  weight_decay: 0.01
+  max_grad_norm: 1.0
+  fp16: false
+  bf16: true
+  logging_steps: 10
+  save_steps: 500
+  eval_steps: 500
+  seed: 42
+
+wandb:
+  project: openproof-tactic
+  name: sft-qwen35-2b

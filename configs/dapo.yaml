@@ -1,0 +1,46 @@
+# DAPO RL training config
+model:
+  checkpoint: checkpoints/sft-qwen35-2b  # or sft-qwen3-1.7b
+  use_lora: true
+  lora_rank: 64
+  lora_alpha: 128
+  dtype: bfloat16
+
+data:
+  prompts_file: data/processed/rl_prompts.jsonl  # ~5K theorem goal states
+  max_seq_length: 2048
+
+dapo:
+  num_rollouts: 32           # samples per prompt
+  eps_low: 0.1               # asymmetric clipping (conservative side)
+  eps_high: 0.2              # asymmetric clipping (exploration side)
+  kl_penalty: 0.0            # no KL -- verifier prevents degeneration
+  length_normalize: true     # Dr. GRPO length normalization
+  dynamic_sampling: true     # skip all-pass / all-fail prompts
+  rewards:
+    goal_closed: 1.0         # tactic closes a goal
+    state_changed: 0.5       # tactic succeeds, changes goal state
+    error: 0.0               # tactic fails (Lean error)
+
+training:
+  output_dir: checkpoints/dapo-qwen35-2b
+  num_epochs: 2
+  per_device_batch_size: 1
+  gradient_accumulation_steps: 4
+  learning_rate: 5.0e-6
+  lr_scheduler: cosine
+  warmup_ratio: 0.05
+  max_grad_norm: 1.0
+  bf16: true
+  logging_steps: 1
+  save_steps: 100
+  seed: 42
+
+pantograph:
+  repl_path: null            # auto-detect from LEAN_PROJECT_PATH
+  lean_project_path: null    # path to Lean project with Mathlib
+  timeout_per_tactic: 10     # seconds
+
+wandb:
+  project: openproof-tactic
+  name: dapo-qwen35-2b

@@ -1,0 +1,30 @@
+# Expert iteration config
+model:
+  checkpoint: checkpoints/sft-qwen35-2b  # starting model
+  dtype: bfloat16
+
+search:
+  beam_width: 16
+  max_expansions: 400
+  timeout: 120                # seconds per problem
+  length_penalty: 0.1
+  adaptive_budget: true       # greedy -> beam=4 -> beam=16 escalation
+
+data:
+  problems_dir: data/raw/unsolved  # JSONL files of unsolved theorem statements
+  output_dir: data/expert_iter
+  min_round: 1
+  max_rounds: 3
+
+filtering:
+  remove_beam1_solvable: true  # drop problems solvable at beam=1
+  simplify_proofs: true        # remove redundant tactics, re-verify
+
+pantograph:
+  repl_path: null
+  lean_project_path: null
+  timeout_per_tactic: 10
+
+wandb:
+  project: openproof-tactic
+  name: expert-iter

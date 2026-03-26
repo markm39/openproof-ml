@@ -1,0 +1,47 @@
+# Data (large, downloaded via scripts)
+data/raw/
+data/processed/
+data/benchmarks/
+
+# Model checkpoints
+checkpoints/
+outputs/
+*.gguf
+*.safetensors
+*.bin
+*.pt
+
+# Experiment tracking
+wandb/
+runs/
+*.log
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Environments
+.venv/
+venv/
+.env
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# LaTeX build artifacts
+paper/*.aux
+paper/*.log
+paper/*.out
+paper/*.synctex.gz
+paper/*.fdb_latexmk
+paper/*.fls

@@ -1,0 +1,24 @@
+# MiniF2F evaluation config
+model:
+  checkpoint: checkpoints/sft-qwen35-2b
+  dtype: bfloat16
+  quantization: null          # null for full precision, "q4_k_m" for quantized
+
+search:
+  beam_width: 8
+  max_expansions: 200
+  timeout: 120
+  length_penalty: 0.1
+  temperature: 0.8
+  top_p: 0.95
+
+eval:
+  benchmark: minif2f-test     # minif2f-test or minif2f-valid
+  problems_dir: data/benchmarks/miniF2F-lean4/MiniF2F/Test
+  output_dir: outputs/eval
+  pass_at_k: [1, 8, 32]
+
+pantograph:
+  repl_path: null
+  lean_project_path: null
+  timeout_per_tactic: 10

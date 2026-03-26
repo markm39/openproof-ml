@@ -1,0 +1,17 @@
+# Model export config (checkpoint -> GGUF -> ollama)
+model:
+  checkpoint: checkpoints/dapo-qwen35-2b
+  merge_lora: true             # merge LoRA weights before export
+
+export:
+  output_dir: exports/
+  gguf_quantizations:
+    - q4_k_m                   # ~1.5GB, on-device default
+    - q8_0                     # ~2.1GB, higher quality
+  ollama_model_name: openproof-tactic
+  ollama_stop_tokens:
+    - ":::"
+    - "\n\n"
+  ollama_params:
+    temperature: 0.8
+    top_p: 0.95

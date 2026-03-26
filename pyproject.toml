@@ -1,0 +1,52 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "openproof-ml"
+version = "0.1.0"
+description = "Training pipeline for on-device Lean 4 tactic prediction models"
+readme = "README.md"
+license = {text = "Apache-2.0"}
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.4",
+    "transformers>=4.45",
+    "datasets>=3.0",
+    "accelerate>=1.0",
+    "trl>=0.12",
+    "peft>=0.13",
+    "pyyaml>=6.0",
+    "wandb>=0.18",
+    "tqdm>=4.66",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.8",
+    "pre-commit>=4.0",
+]
+vllm = [
+    "vllm>=0.6",
+]
+export = [
+    "llama-cpp-python>=0.3",
+    "gguf>=0.10",
+]
+unsloth = [
+    "unsloth>=2024.12",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
