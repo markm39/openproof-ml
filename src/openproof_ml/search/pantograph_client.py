@@ -29,8 +29,8 @@ class PantographClient:
     """
 
     def __init__(self, lean_project_path: str | Path, repl_path: str | None = None):
-        self.lean_project_path = Path(lean_project_path)
-        self.repl_path = repl_path or self._find_repl()
+        self.lean_project_path = Path(lean_project_path).resolve()
+        self.repl_path = str(Path(repl_path).resolve()) if repl_path else self._find_repl()
         self.process: subprocess.Popen | None = None
 
     def _find_repl(self) -> str:
