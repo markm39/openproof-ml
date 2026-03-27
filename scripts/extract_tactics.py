@@ -15,8 +15,10 @@ Usage:
 import argparse
 import json
 import logging
+import os
 import random
 import shutil
+import traceback
 from pathlib import Path
 
 from openproof_ml.data.formatting import BANNED_TACTICS, format_training_example
@@ -143,8 +145,23 @@ def trace_goedel_with_leandojo(project_dir: Path) -> list[dict]:
 
     logger.info(f"Tracing project at {project_dir} with LeanDojo-v2...")
     try:
+        # LeanDojo needs a git repo. Init one if needed.
+        import subprocess
+
+        abs_project = project_dir.resolve()
+        if not (abs_project / ".git").exists():
+            subprocess.run(["git", "init"], cwd=abs_project, capture_output=True)
+            subprocess.run(["git", "add", "."], cwd=abs_project, capture_output=True)
+            subprocess.run(
+                ["git", "commit", "-m", "initial"],
+                cwd=abs_project,
+                capture_output=True,
+                env={**os.environ, "GIT_AUTHOR_NAME": "x", "GIT_AUTHOR_EMAIL": "x@x",
+                     "GIT_COMMITTER_NAME": "x", "GIT_COMMITTER_EMAIL": "x@x"},
+            )
+
         traced_repo = db.trace_repository(
-            url=str(project_dir.resolve()),
+            url=str(abs_project),
             commit=None,
             build_deps=False,
         )
@@ -160,6 +177,7 @@ def trace_goedel_with_leandojo(project_dir: Path) -> list[dict]:
         logger.info(f"LeanDojo tracing: extracted {len(pairs)} pairs")
     except Exception as e:
         logger.error(f"LeanDojo tracing failed: {e}")
+        logger.error(traceback.format_exc())
         logger.info("Falling back to Phase 1 data only")
 
     return pairs
