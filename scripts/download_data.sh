@@ -73,14 +73,26 @@ fi
 
 # 3. Goedel-Pset-v1-solved (large-scale proofs from expert iteration)
 if [ ! -f "$DATA_DIR/goedel_pset/train.jsonl" ]; then
-    echo "[3/4] Downloading Goedel-Pset-v1-solved..."
+    echo "[3/4] Downloading Goedel-LM proof data..."
     python3 -c "
 import os
 os.makedirs('$DATA_DIR/goedel_pset', exist_ok=True)
 from datasets import load_dataset
-ds = load_dataset('Goedel-LM/Goedel-Pset-v1-solved', split='train')
+
+# Lean-workbook-proofs: 29.7K solved problems with full proofs
+print('  Downloading Goedel-LM/Lean-workbook-proofs...')
+ds = load_dataset('Goedel-LM/Lean-workbook-proofs', split='train')
 ds.to_json('$DATA_DIR/goedel_pset/train.jsonl')
-print(f'  Downloaded {len(ds)} examples')
+print(f'  Downloaded {len(ds)} workbook proofs')
+
+# Goedel-Pset-v1: 1.73M formalized statements (for expert iteration later)
+print('  Downloading Goedel-LM/Goedel-Pset-v1 (statements)...')
+try:
+    ds2 = load_dataset('Goedel-LM/Goedel-Pset-v1', split='train')
+    ds2.to_json('$DATA_DIR/goedel_pset/statements.jsonl')
+    print(f'  Downloaded {len(ds2)} statements')
+except Exception as e:
+    print(f'  Goedel-Pset-v1 statements failed: {e} (optional, needed for expert iteration)')
 "
     echo "  Done."
 else
