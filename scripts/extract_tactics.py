@@ -40,6 +40,10 @@ def replay_proof_through_pantograph(
 ) -> list[dict]:
     """Replay a proof through Pantograph, extracting (state, tactic) at each step.
 
+    For each tactic, we record the goal state BEFORE the tactic is applied,
+    paired with the tactic itself. This matches what the model sees at
+    inference time: given a goal, predict the next tactic.
+
     Args:
         pantograph_client: Running PantographClient instance.
         statement: The theorem type expression (forall ...).
@@ -57,44 +61,33 @@ def replay_proof_through_pantograph(
     allocated = [state_id]
     current_state_id = state_id
 
+    # The goal BEFORE the first tactic is the theorem statement itself.
+    # After each tactic, remaining_goals gives us the state for the next tactic.
+    current_goal = statement
+
     for tactic in tactics:
         tactic = tactic.strip()
         if not tactic or tactic.lower() in BANNED_TACTICS:
             continue
 
-        # Get the current goal state description
-        # We use try_tactic to both get the state and advance
         result = pantograph_client.try_tactic(current_state_id, 0, tactic)
 
         if result.success and result.new_state_id is not None:
-            # Record the goal state BEFORE this tactic was applied
-            # For the first tactic, this is the theorem statement itself
-            # For subsequent tactics, it's the remaining goal from the previous step
-            goal_text = result.remaining_goals[0] if result.remaining_goals else ""
-
-            # The state we want is what was shown BEFORE the tactic,
-            # which we can get from the parent's goal description
-            # Since Pantograph doesn't directly expose "current goals" without
-            # applying a tactic, we track goals from the previous result
-            pairs.append(format_training_example(statement if not pairs else pairs[-1].get("_next_goal", statement), tactic))
-
-            # Store the next goal for the following tactic
-            if result.remaining_goals:
-                pairs[-1]["_next_goal"] = result.remaining_goals[0]
+            # Record: (goal before this tactic, this tactic)
+            pairs.append(format_training_example(current_goal, tactic))
 
             allocated.append(result.new_state_id)
             current_state_id = result.new_state_id
 
-            # Proof complete
-            if not result.remaining_goals:
+            # Update current_goal for the next tactic
+            if result.remaining_goals:
+                current_goal = result.remaining_goals[0]
+            else:
+                # Proof complete
                 break
         else:
-            # Tactic failed -- skip rest of proof
+            # Tactic failed -- stop replaying
             break
-
-    # Clean up the internal _next_goal field
-    for p in pairs:
-        p.pop("_next_goal", None)
 
     # Clean up Pantograph states
     for sid in allocated:
