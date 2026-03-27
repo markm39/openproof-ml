@@ -160,9 +160,19 @@ def trace_goedel_with_leandojo(project_dir: Path) -> list[dict]:
                      "GIT_COMMITTER_NAME": "x", "GIT_COMMITTER_EMAIL": "x@x"},
             )
 
+        # Get the commit hash
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=abs_project,
+            capture_output=True,
+            text=True,
+        )
+        commit_hash = result.stdout.strip()
+        logger.info(f"Tracing commit {commit_hash}")
+
         traced_repo = db.trace_repository(
             url=str(abs_project),
-            commit=None,
+            commit=commit_hash,
             build_deps=False,
         )
 
