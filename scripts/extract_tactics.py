@@ -259,10 +259,41 @@ def extract_goedel_pset_direct(input_dir: Path) -> list[dict]:
     return pairs
 
 
+def split_full_proof(full_proof: str) -> tuple[str, str] | None:
+    """Split a full_proof field into (statement, proof_body).
+
+    full_proof looks like:
+        import Mathlib\nimport Aesop\nset_option ...\nopen ...\n
+        theorem foo (x : Nat) : x = x := by\n  rfl
+
+    Returns (statement_line, proof_tactics_text) or None.
+    """
+    # Find the ":= by" that separates statement from proof
+    by_idx = full_proof.find(":= by")
+    if by_idx == -1:
+        return None
+
+    # Walk backwards from ":= by" to find "theorem" or "lemma"
+    before_by = full_proof[:by_idx]
+    for keyword in ["theorem ", "lemma ", "def "]:
+        kw_idx = before_by.rfind(keyword)
+        if kw_idx != -1:
+            statement = full_proof[kw_idx:by_idx + len(":= by")].strip()
+            proof_body = full_proof[by_idx + len(":= by"):].strip()
+            return (statement, proof_body)
+
+    return None
+
+
 def extract_goedel_pset_replay(
     input_dir: Path, pantograph_client
 ) -> list[dict]:
-    """Extract pairs from Goedel-Pset whole proofs via Pantograph replay."""
+    """Extract pairs from Goedel-Pset whole proofs via Pantograph replay.
+
+    The Goedel-LM/Lean-workbook-proofs dataset has {problem_id, full_proof}
+    where full_proof is an entire Lean file. We parse out the theorem
+    statement and proof tactics, then replay through Pantograph.
+    """
     pairs = []
     path = input_dir / "goedel_pset" / "train.jsonl"
     if not path.exists():
@@ -271,6 +302,7 @@ def extract_goedel_pset_replay(
 
     replayed = 0
     failed = 0
+    skipped = 0
 
     with open(path) as f:
         for i, line in enumerate(f):
@@ -280,19 +312,31 @@ def extract_goedel_pset_replay(
             if "traced_tactics" in ex:
                 continue
 
-            # Need both statement and proof
-            statement = ex.get("formal_statement") or ex.get("statement", "")
-            proof = ex.get("proof", "")
-            if not statement or not proof:
-                continue
+            # Parse full_proof field (Goedel-LM/Lean-workbook-proofs format)
+            full_proof = ex.get("full_proof", "")
+            if not full_proof:
+                # Try older field names as fallback
+                statement = ex.get("formal_statement") or ex.get("statement", "")
+                proof = ex.get("proof", "")
+                if not statement or not proof:
+                    skipped += 1
+                    continue
+            else:
+                parsed = split_full_proof(full_proof)
+                if parsed is None:
+                    skipped += 1
+                    continue
+                statement, proof = parsed
 
             tactics = parse_proof_tactics(proof)
             if not tactics:
+                skipped += 1
                 continue
 
             # Extract type expression from statement
             type_expr = extract_type_from_statement(statement)
             if not type_expr:
+                skipped += 1
                 continue
 
             try:
