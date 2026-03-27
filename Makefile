@@ -44,11 +44,11 @@ setup-lean-pantograph:
 	@if [ ! -d $(PANTOGRAPH_DIR)/.git ]; then \
 		git clone https://github.com/leanprover/Pantograph.git $(PANTOGRAPH_DIR); \
 	fi
-	@# Checkout pinned commit, reset, apply patch, then force toolchain version
+	@# Checkout pinned commit, then overwrite files for 4.28 compatibility
 	cd $(PANTOGRAPH_DIR) && git fetch origin && git checkout $(PANTOGRAPH_COMMIT) -- . 2>/dev/null || git checkout $(PANTOGRAPH_COMMIT)
-	cd $(PANTOGRAPH_DIR) && git checkout -- . && git apply ../../scripts/pantograph-v4.28.0.patch || echo "  Patch already applied"
-	@# Force toolchain AFTER patch (patch includes it but this guarantees it)
+	cd $(PANTOGRAPH_DIR) && git checkout -- .
 	echo "leanprover/lean4:$(LEAN_VERSION)" > $(PANTOGRAPH_DIR)/lean-toolchain
+	cp scripts/pantograph-overrides/Library.lean $(PANTOGRAPH_DIR)/Pantograph/Library.lean
 	cd $(PANTOGRAPH_DIR) && $(ELAN_BIN)/lake update && $(ELAN_BIN)/lake build repl
 	@echo "  Pantograph REPL built at $(PANTOGRAPH_DIR)/.lake/build/bin/repl"
 
