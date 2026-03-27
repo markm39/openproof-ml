@@ -13,7 +13,6 @@ mkdir -p "$LEAN_DIR"
 echo "leanprover/lean4:${LEAN_VERSION}" > "$LEAN_DIR/lean-toolchain"
 
 cat > "$LEAN_DIR/lakefile.toml" << EOF
-[package]
 name = "openproof-ml-lean"
 version = "0.1.0"
 
