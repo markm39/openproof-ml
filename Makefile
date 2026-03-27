@@ -3,6 +3,7 @@
 CONFIG ?= configs/sft_qwen35_2b.yaml
 LEAN_VERSION ?= v4.28.0
 MATHLIB_VERSION ?= v4.28.0
+PANTOGRAPH_COMMIT ?= 5fcb754
 
 ELAN_BIN = $(HOME)/.elan/bin
 LEAN_DIR = lean
@@ -45,11 +46,11 @@ setup-lean-pantograph:
 	@if [ ! -d $(PANTOGRAPH_DIR)/.git ]; then \
 		git clone https://github.com/leanprover/Pantograph.git $(PANTOGRAPH_DIR); \
 	fi
-	@# Checkout the dev branch (latest) and apply our 4.28 compatibility patch
-	cd $(PANTOGRAPH_DIR) && git fetch origin dev && git checkout FETCH_HEAD
+	@# Checkout pinned commit and apply 4.28 compatibility patch
+	cd $(PANTOGRAPH_DIR) && git fetch origin && git checkout $(PANTOGRAPH_COMMIT) -- . 2>/dev/null || git checkout $(PANTOGRAPH_COMMIT)
 	@printf 'leanprover/lean4:%s\n' "$(LEAN_VERSION)" > $(PANTOGRAPH_DIR)/lean-toolchain
-	cd $(PANTOGRAPH_DIR) && git apply ../../scripts/pantograph-v4.28.0.patch || echo "  Patch already applied or not needed"
-	cd $(PANTOGRAPH_DIR) && $(ELAN_BIN)/lake build repl
+	cd $(PANTOGRAPH_DIR) && git checkout -- . && git apply ../../scripts/pantograph-v4.28.0.patch || echo "  Patch already applied"
+	cd $(PANTOGRAPH_DIR) && $(ELAN_BIN)/lake update && $(ELAN_BIN)/lake build repl
 	@echo "  Pantograph REPL built at $(PANTOGRAPH_DIR)/.lake/build/bin/repl"
 
 setup-all: setup setup-lean
