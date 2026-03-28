@@ -130,11 +130,25 @@ class PantographFrontend:
         )
         return result.stdout.strip()
 
-    def _send(self, cmd: str, payload: dict) -> dict:
+    def _send(self, cmd: str, payload: dict, timeout: float = 30.0) -> dict:
+        import select
+
         msg = json.dumps({"cmd": cmd, "payload": payload})
         self.process.stdin.write(f"{msg}\n".encode())
         self.process.stdin.flush()
+
+        # Wait for response with timeout (prevents hanging on stuck proofs)
+        ready, _, _ = select.select([self.process.stdout], [], [], timeout)
+        if not ready:
+            # Kill and mark as dead so caller restarts
+            self.process.kill()
+            self.process.wait()
+            self.process = None
+            raise TimeoutError(f"Pantograph timed out after {timeout}s")
+
         response = self.process.stdout.readline().decode().strip()
+        if not response:
+            raise RuntimeError("Pantograph returned empty response (process died)")
         return json.loads(response)
 
     def extract_invocations(self, lean_source: str) -> list[dict]:
@@ -250,16 +264,13 @@ def extract_goedel_pantograph(
                             pairs.append(format_training_example(goal_before.strip(), tactic.strip()))
                     n_new = len(pairs) - n_before
                     traced += 1
-                    if traced <= 5 or traced % 500 == 0:
-                        logger.info(f"  [{i}] traced in {elapsed:.1f}s, {n_new} pairs (total: {len(pairs)})")
+                    logger.info(f"  [{i}] OK {elapsed:.1f}s +{n_new} pairs (total: {len(pairs)})")
                 else:
                     failed += 1
-                    if failed <= 5:
-                        logger.info(f"  [{i}] no invocations ({elapsed:.1f}s)")
+                    logger.info(f"  [{i}] empty {elapsed:.1f}s")
             except Exception as e:
                 failed += 1
-                if failed <= 10:
-                    logger.info(f"  [{i}] exception: {e}")
+                logger.info(f"  [{i}] ERR: {e}")
 
             if (i + 1) % 1000 == 0:
                 logger.info(
