@@ -175,6 +175,9 @@ class PantographFrontend:
             except OSError:
                 pass
 
+    def is_alive(self) -> bool:
+        return self.process is not None and self.process.poll() is None
+
     def close(self):
         if self.process:
             self.process.terminate()
@@ -182,11 +185,14 @@ class PantographFrontend:
             self.process = None
 
 
-def extract_goedel_pantograph(input_dir: Path, pantograph: PantographFrontend) -> list[dict]:
+def extract_goedel_pantograph(
+    input_dir: Path, repl_path: str, lean_project: str
+) -> list[dict]:
     """Extract (state, tactic) pairs from Goedel whole proofs via Pantograph.
 
     Uses frontend.process with invocations to get kernel-level tactic states.
     Each proof is sent as a complete Lean file -- Pantograph handles parsing.
+    Automatically restarts Pantograph if it crashes.
     """
     pairs = []
     path = input_dir / "goedel_pset" / "train.jsonl"
@@ -196,6 +202,10 @@ def extract_goedel_pantograph(input_dir: Path, pantograph: PantographFrontend) -
 
     traced = 0
     failed = 0
+    restarts = 0
+
+    pg = PantographFrontend(repl_path, lean_project)
+    pg.start()
 
     with open(path) as f:
         for i, line in enumerate(f):
@@ -204,26 +214,41 @@ def extract_goedel_pantograph(input_dir: Path, pantograph: PantographFrontend) -
             if not full_proof or ":= by" not in full_proof:
                 continue
 
-            invocations = pantograph.extract_invocations(full_proof)
+            # Restart Pantograph if it died
+            if not pg.is_alive():
+                logger.info(f"  Pantograph died at proof {i}, restarting...")
+                pg.close()
+                pg = PantographFrontend(repl_path, lean_project)
+                pg.start()
+                restarts += 1
 
-            if invocations:
-                for inv in invocations:
-                    goal_before = inv.get("goalBefore", "")
-                    tactic = inv.get("tactic", "")
-                    if goal_before and tactic and tactic.lower().strip() not in BANNED_TACTICS:
-                        pairs.append(format_training_example(goal_before.strip(), tactic.strip()))
-                traced += 1
-            else:
+            try:
+                invocations = pg.extract_invocations(full_proof)
+
+                if invocations:
+                    for inv in invocations:
+                        goal_before = inv.get("goalBefore", "")
+                        tactic = inv.get("tactic", "")
+                        if goal_before and tactic and tactic.lower().strip() not in BANNED_TACTICS:
+                            pairs.append(format_training_example(goal_before.strip(), tactic.strip()))
+                    traced += 1
+                else:
+                    failed += 1
+            except Exception as e:
                 failed += 1
+                if failed <= 10:
+                    logger.debug(f"  Proof {i} failed: {e}")
 
-            if (i + 1) % 5000 == 0:
+            if (i + 1) % 1000 == 0:
                 logger.info(
                     f"  Goedel progress: {i+1} processed, "
-                    f"{traced} traced, {failed} failed, {len(pairs)} pairs"
+                    f"{traced} traced, {failed} failed, {restarts} restarts, {len(pairs)} pairs"
                 )
 
+    pg.close()
     logger.info(
-        f"Goedel-Pset (Pantograph): {traced} traced, {failed} failed, {len(pairs)} pairs"
+        f"Goedel-Pset (Pantograph): {traced} traced, {failed} failed, "
+        f"{restarts} restarts, {len(pairs)} pairs"
     )
     return pairs
 
@@ -269,14 +294,9 @@ def main():
     # Phase 2: Pantograph kernel-level extraction
     if not args.skip_phase2 and args.pantograph and args.lean_project:
         logger.info("=== Phase 2: Pantograph frontend.process ===")
-        pg = PantographFrontend(args.pantograph, args.lean_project)
-        try:
-            pg.start()
-            all_pairs.extend(extract_goedel_pantograph(input_dir, pg))
-        except Exception as e:
-            logger.error(f"Pantograph extraction failed: {e}")
-        finally:
-            pg.close()
+        all_pairs.extend(
+            extract_goedel_pantograph(input_dir, args.pantograph, args.lean_project)
+        )
     elif not args.skip_phase2:
         logger.info("=== Phase 2: Skipped (no --pantograph/--lean-project) ===")
     else:
