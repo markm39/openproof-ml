@@ -140,16 +140,29 @@ class PantographFrontend:
     def extract_invocations(self, lean_source: str) -> list[dict]:
         """Send a Lean file to frontend.process and get tactic invocations.
 
+        Uses inheritEnv=True so Mathlib (already loaded at REPL startup) is
+        reused. Import lines are stripped since the env already has them.
+
         Returns list of {"goalBefore": ..., "tactic": ..., "goalAfter": ...}
         """
+        # Strip import/set_option/open lines -- env already has Mathlib loaded
+        lines = lean_source.split("\n")
+        body_lines = []
+        for line in lines:
+            stripped = line.strip()
+            if stripped.startswith("import ") or stripped.startswith("set_option ") or stripped.startswith("open "):
+                continue
+            body_lines.append(line)
+        body = "\n".join(body_lines)
+
         with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
             invocations_path = f.name
 
         try:
             response = self._send("frontend.process", {
-                "file": lean_source,
-                "readHeader": True,
-                "inheritEnv": False,
+                "file": body,
+                "readHeader": False,
+                "inheritEnv": True,
                 "newConstants": True,
                 "invocations": invocations_path,
             })
