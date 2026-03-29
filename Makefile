@@ -79,7 +79,7 @@ extract-fast:
 NUM_GPUS := $(shell nvidia-smi -L 2>/dev/null | wc -l || echo 1)
 
 train-sft:
-	torchrun --nproc_per_node=$(NUM_GPUS) -m openproof_ml.training.sft --config $(CONFIG)
+	torchrun --nproc_per_node=$(NUM_GPUS) --master_port=29500 scripts/run_sft.py --config $(CONFIG)
 
 train-expert-iter:
 	python -m openproof_ml.training.expert_iteration --config $(CONFIG)
