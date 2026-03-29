@@ -76,8 +76,10 @@ extract-fast:
 
 # ── Training ─────────────────────────────────────────────────────────
 
+NUM_GPUS := $(shell nvidia-smi -L 2>/dev/null | wc -l || echo 1)
+
 train-sft:
-	python -m openproof_ml.training.sft --config $(CONFIG)
+	accelerate launch --num_processes $(NUM_GPUS) -m openproof_ml.training.sft --config $(CONFIG)
 
 train-expert-iter:
 	python -m openproof_ml.training.expert_iteration --config $(CONFIG)
