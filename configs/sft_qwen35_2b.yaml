@@ -18,7 +18,7 @@ training:
   output_dir: checkpoints/sft-qwen35-2b
   num_epochs: 3
   per_device_batch_size: 8
-  gradient_accumulation_steps: 16  # effective batch = 128
+  gradient_accumulation_steps: 8  # effective batch = 8 * 2 GPUs * 8 = 128
   learning_rate: 2.0e-5
   lr_scheduler: cosine
   min_lr: 1.0e-6
