@@ -95,11 +95,14 @@ def main():
 
         # Mask prompt tokens in labels (set to -100)
         prompt_tokenized = tokenizer(example[prompt_field], add_special_tokens=False)
-        prompt_len = len(prompt_tokenized["input_ids"])
+        prompt_len = min(len(prompt_tokenized["input_ids"]), len(tokenized["input_ids"]))
 
         labels = tokenized["input_ids"].copy()
         labels[:prompt_len] = [-100] * prompt_len
         tokenized["labels"] = labels
+
+        # Sanity: labels and input_ids must be same length
+        assert len(tokenized["labels"]) == len(tokenized["input_ids"])
 
         return tokenized
 
