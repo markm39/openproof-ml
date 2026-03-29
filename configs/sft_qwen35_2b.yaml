@@ -17,8 +17,8 @@ data:
 training:
   output_dir: checkpoints/sft-qwen35-2b
   num_epochs: 3
-  per_device_batch_size: 4
-  gradient_accumulation_steps: 16  # effective batch = 4 * 2 GPUs * 16 = 128
+  per_device_batch_size: 2
+  gradient_accumulation_steps: 32  # effective batch = 2 * 2 GPUs * 32 = 128
   learning_rate: 2.0e-5
   lr_scheduler: cosine
   min_lr: 1.0e-6
@@ -31,7 +31,3 @@ training:
   save_steps: 500
   eval_steps: 500
   seed: 42
-
-wandb:
-  project: openproof-tactic
-  name: sft-qwen35-2b
