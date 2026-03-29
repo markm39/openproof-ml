@@ -13,7 +13,6 @@ from peft import LoraConfig, get_peft_model
 from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
-    DataCollatorForLanguageModeling,
     Trainer,
     TrainingArguments,
 )
@@ -61,44 +60,6 @@ def build_model_and_tokenizer(cfg: dict):
     return model, tokenizer
 
 
-def load_data(cfg: dict):
-    """Load training and validation datasets from JSONL."""
-    data_cfg = cfg["data"]
-    train_file = data_cfg["train_file"]
-    val_file = data_cfg.get("val_file")
-
-    data_files = {"train": train_file}
-    if val_file and Path(val_file).exists():
-        data_files["validation"] = val_file
-
-    return load_dataset("json", data_files=data_files)
-
-
-def tokenize_fn(examples, tokenizer, max_length, prompt_field, completion_field):
-    """Tokenize examples with prompt masking for SFT."""
-    texts = [p + c for p, c in zip(examples[prompt_field], examples[completion_field])]
-
-    encodings = tokenizer(
-        texts,
-        truncation=True,
-        max_length=max_length,
-        padding=False,
-    )
-
-    # Mask prompt tokens in labels
-    labels = []
-    for i, (prompt, ids) in enumerate(
-        zip(examples[prompt_field], encodings["input_ids"])
-    ):
-        prompt_ids = tokenizer(prompt, add_special_tokens=False)["input_ids"]
-        label = list(ids)
-        label[: len(prompt_ids)] = [-100] * len(prompt_ids)
-        labels.append(label)
-
-    encodings["labels"] = labels
-    return encodings
-
-
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", required=True, help="Path to YAML config")
@@ -112,21 +73,36 @@ def main():
     wandb_cfg = cfg.get("wandb", {})
     if wandb_cfg:
         import wandb
-
         wandb.init(project=wandb_cfg.get("project"), name=wandb_cfg.get("name"))
 
     model, tokenizer = build_model_and_tokenizer(cfg)
-    dataset = load_data(cfg)
-
     max_length = data_cfg.get("max_seq_length", 2048)
     prompt_field = data_cfg.get("prompt_field", "prompt")
     completion_field = data_cfg.get("completion_field", "completion")
 
-    tokenized = dataset.map(
-        lambda ex: tokenize_fn(ex, tokenizer, max_length, prompt_field, completion_field),
-        batched=True,
-        remove_columns=dataset["train"].column_names,
-    )
+    # Load dataset
+    data_files = {"train": data_cfg["train_file"]}
+    val_file = data_cfg.get("val_file")
+    if val_file and Path(val_file).exists():
+        data_files["validation"] = val_file
+    dataset = load_dataset("json", data_files=data_files)
+
+    # Tokenize: concat prompt + completion, create labels with prompt masked
+    def tokenize(example):
+        text = example[prompt_field] + example[completion_field] + tokenizer.eos_token
+        tokenized = tokenizer(text, truncation=True, max_length=max_length)
+
+        # Mask prompt tokens in labels (set to -100)
+        prompt_tokenized = tokenizer(example[prompt_field], add_special_tokens=False)
+        prompt_len = len(prompt_tokenized["input_ids"])
+
+        labels = tokenized["input_ids"].copy()
+        labels[:prompt_len] = [-100] * prompt_len
+        tokenized["labels"] = labels
+
+        return tokenized
+
+    tokenized = dataset.map(tokenize, remove_columns=dataset["train"].column_names)
 
     training_args = TrainingArguments(
         output_dir=train_cfg["output_dir"],
@@ -147,12 +123,6 @@ def main():
         seed=train_cfg.get("seed", 42),
         report_to="wandb" if wandb_cfg else "none",
         dataloader_num_workers=4,
-        remove_unused_columns=False,
-    )
-
-    data_collator = DataCollatorForLanguageModeling(
-        tokenizer=tokenizer,
-        mlm=False,  # causal LM, not masked LM
     )
 
     trainer = Trainer(
@@ -161,7 +131,6 @@ def main():
         train_dataset=tokenized["train"],
         eval_dataset=tokenized.get("validation"),
         processing_class=tokenizer,
-        data_collator=data_collator,
     )
 
     # Resume from checkpoint if one exists
