@@ -36,7 +36,13 @@ setup-lean-mathlib:
 	bash scripts/setup_lean_project.sh $(LEAN_VERSION) $(MATHLIB_VERSION) $(LEAN_DIR)
 	cd $(LEAN_DIR) && $(ELAN_BIN)/lake update
 	@echo "=== Downloading Mathlib cache ==="
-	cd $(LEAN_DIR) && $(ELAN_BIN)/lake exe cache get || echo "  Cache download failed. Continuing..."
+	cd $(LEAN_DIR) && $(ELAN_BIN)/lake exe cache get || ( \
+		echo "  Cache failed, fixing ProofWidgets manually..." && \
+		curl -sL -o /tmp/pw.tar.gz https://github.com/leanprover-community/ProofWidgets4/releases/download/v0.0.87/ProofWidgets4.tar.gz && \
+		mkdir -p .lake/packages/proofwidgets/.lake/build && \
+		tar --no-same-owner -xzf /tmp/pw.tar.gz -C .lake/packages/proofwidgets/.lake/build && \
+		$(ELAN_BIN)/lake exe cache get \
+	)
 
 setup-lean-pantograph:
 	@echo "=== Building Pantograph for Lean $(LEAN_VERSION) ==="
